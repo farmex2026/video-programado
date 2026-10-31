@@ -20,13 +20,18 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.json.JSONArray;
 
 public class MainActivity extends Activity {
+    private static final int MAX = 5;
     private WebView web;
     private SharedPreferences p;
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -40,6 +45,10 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         p = getSharedPreferences("cfg", MODE_PRIVATE);
+        // Pasar la URL de la versión anterior al casillero 1
+        if (!p.getString("url", "").isEmpty() && p.getString("url1", "").isEmpty()) {
+            p.edit().putString("url1", p.getString("url", "")).remove("url").apply();
+        }
         web = new WebView(this);
         web.setBackgroundColor(Color.BLACK);
         WebSettings s = web.getSettings();
@@ -52,7 +61,7 @@ public class MainActivity extends Activity {
         web.setWebChromeClient(new WebChromeClient());
         setContentView(web);
         hideBars();
-        if (p.getString("url", "").isEmpty()) showSettings();
+        if (urls().isEmpty()) showSettings();
     }
 
     private void hideBars() {
@@ -74,11 +83,20 @@ public class MainActivity extends Activity {
         h.removeCallbacks(tick);
     }
 
+    private List<String> urls() {
+        List<String> l = new ArrayList<>();
+        for (int i = 1; i <= MAX; i++) {
+            String u = p.getString("url" + i, "").trim();
+            if (!u.isEmpty()) l.add(fixDrive(u));
+        }
+        return l;
+    }
+
     private void check() {
-        String url = p.getString("url", "");
-        if (url.isEmpty()) return;
+        List<String> l = urls();
+        if (l.isEmpty()) return;
         boolean on = inSchedule();
-        if (on && !playing) play(url);
+        if (on && !playing) play(l);
         else if (!on && playing) stop();
     }
 
@@ -89,26 +107,23 @@ public class MainActivity extends Activity {
         int a = p.getInt("start", 480), e = p.getInt("end", 1320);
         if (a == e) return true;
         if (a < e) return now >= a && now < e;
-        return now >= a || now < e; // horario que cruza la medianoche
+        return now >= a || now < e;
     }
 
-    private void play(String url) {
+    private void play(List<String> l) {
         playing = true;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        String u = fixDrive(url);
-        String yt = youtubeHtml(u);
-        if (yt != null) {
-            web.loadDataWithBaseURL("https://farmex2026.github.io/", yt, "text/html", "utf-8", null);
-        } else if (isVideo(u)) {
-            String safe = u.replace("'", "%27");
-            String html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
-                    + "<body style='margin:0;background:#000;overflow:hidden'>"
-                    + "<video src='" + safe + "' autoplay loop playsinline "
-                    + "style='width:100vw;height:100vh;object-fit:contain'></video></body></html>";
-            web.loadDataWithBaseURL(u, html, "text/html", "utf-8", null);
-        } else {
-            web.loadUrl(u);
+        String first = l.get(0);
+        if (l.size() == 1 && !isYoutube(first) && !isVideo(first)) {
+            web.loadUrl(first); // una sola página web: se abre tal cual
+            return;
         }
+        List<String> media = new ArrayList<>();
+        for (String u : l) if (isYoutube(u) || isVideo(u)) media.add(u);
+        if (media.isEmpty()) { web.loadUrl(first); return; }
+        String list = new JSONArray(media).toString().replace("</", "<\\/");
+        web.loadDataWithBaseURL("https://farmex2026.github.io/",
+                PLAYER.replace("__LIST__", list), "text/html", "utf-8", null);
     }
 
     private void stop() {
@@ -123,39 +138,8 @@ public class MainActivity extends Activity {
         return url;
     }
 
-    // Arma un reproductor de YouTube que repite el video (o la lista) al terminar
-    private String youtubeHtml(String u) {
-        if (!u.contains("youtube.com") && !u.contains("youtu.be")) return null;
-        Matcher mv = Pattern.compile("(?:youtu\\.be/|[?&]v=|/shorts/|/live/|/embed/)([\\w-]{11})").matcher(u);
-        Matcher ml = Pattern.compile("[?&]list=([\\w-]+)").matcher(u);
-        String id = mv.find() ? mv.group(1) : null;
-        String list = ml.find() ? ml.group(1) : null;
-        if (id == null && list == null) return null;
-
-        String vars = "autoplay:1,controls:0,rel:0,playsinline:1,iv_load_policy:3,loop:1";
-        String opts;
-        if (list != null) {
-            vars += ",listType:'playlist',list:'" + list + "'";
-            opts = (id != null ? "videoId:'" + id + "'," : "");
-        } else {
-            vars += ",playlist:'" + id + "'";
-            opts = "videoId:'" + id + "',";
-        }
-        return "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                + "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}"
-                + "#p{position:absolute;top:0;left:0;width:100%;height:100%}</style></head><body>"
-                + "<div id='p'></div>"
-                + "<script src='https://www.youtube.com/iframe_api'></script><script>"
-                + "function onYouTubeIframeAPIReady(){new YT.Player('p',{width:'100%',height:'100%',"
-                + opts + "playerVars:{" + vars + "},events:{"
-                + "onReady:function(e){e.target.playVideo();},"
-                + "onStateChange:function(e){if(e.data===0){"
-                + (list != null ? "e.target.playVideoAt(0);" : "e.target.seekTo(0);e.target.playVideo();")
-                + "}},"
-                + "onError:function(){setTimeout(function(){location.reload();},30000);}"
-                + "}});}"
-                + "setTimeout(function(){if(!window.YT||!YT.Player)location.reload();},60000);"
-                + "</script></body></html>";
+    private boolean isYoutube(String u) {
+        return u.contains("youtube.com") || u.contains("youtu.be");
     }
 
     private boolean isVideo(String u) {
@@ -179,13 +163,18 @@ public class MainActivity extends Activity {
         ll.setOrientation(LinearLayout.VERTICAL);
         ll.setPadding(40, 20, 40, 0);
 
-        TextView t = new TextView(this);
-        t.setText("URL del video o página:");
-        ll.addView(t);
-        final EditText et = new EditText(this);
-        et.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
-        et.setText(p.getString("url", ""));
-        ll.addView(et);
+        final EditText[] ets = new EditText[MAX];
+        for (int i = 0; i < MAX; i++) {
+            TextView t = new TextView(this);
+            t.setText("Video " + (i + 1) + ":");
+            ll.addView(t);
+            ets[i] = new EditText(this);
+            ets[i].setInputType(InputType.TYPE_TEXT_VARIATION_URI);
+            ets[i].setSingleLine(true);
+            ets[i].setHint("URL (opcional)");
+            ets[i].setText(p.getString("url" + (i + 1), ""));
+            ll.addView(ets[i]);
+        }
 
         final CheckBox cb = new CheckBox(this);
         cb.setText("Usar horario");
@@ -207,13 +196,16 @@ public class MainActivity extends Activity {
         ll.addView(bs);
         ll.addView(be);
 
+        ScrollView sv = new ScrollView(this);
+        sv.addView(ll);
+
         new AlertDialog.Builder(this)
                 .setTitle("Configuración")
-                .setView(ll)
+                .setView(sv)
                 .setPositiveButton("Guardar", (d, w) -> {
-                    p.edit().putString("url", et.getText().toString().trim())
-                            .putBoolean("sched", cb.isChecked())
-                            .putInt("start", st[0]).putInt("end", en[0]).apply();
+                    SharedPreferences.Editor e = p.edit();
+                    for (int i = 0; i < MAX; i++) e.putString("url" + (i + 1), ets[i].getText().toString().trim());
+                    e.putBoolean("sched", cb.isChecked()).putInt("start", st[0]).putInt("end", en[0]).apply();
                     stop();
                     check();
                     hideBars();
@@ -222,4 +214,84 @@ public class MainActivity extends Activity {
                 .setNeutralButton("Salir", (d, w) -> finish())
                 .show();
     }
+
+    // Reproductor con dos capas: mientras suena un video, el siguiente ya está
+    // cargado y pausado detrás; al terminar se cambia de capa sin corte.
+    private static final String PLAYER = """
+<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden}
+.ly{position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;z-index:1;background:#000}
+.ly video,.ly iframe,.ly div{width:100%;height:100%;border:0;object-fit:contain;background:#000}
+</style></head><body>
+<div class="ly" id="a"></div><div class="ly" id="b"></div>
+<script>
+var LIST=__LIST__;
+var RX=new RegExp("(?:youtu[.]be/|[?&]v=|/shorts/|/live/|/embed/)([A-Za-z0-9_-]{11})");
+var items=LIST.map(function(u){var m=u.match(RX);return m?{t:'yt',id:m[1]}:{t:'v',src:u};});
+var layers=[document.getElementById('a'),document.getElementById('b')];
+var slots=[null,null],cur=0,switching=false,ytReady=false,pend=[],lastT=-1,lastMove=Date.now();
+
+function needYT(){return items.some(function(i){return i.t=='yt';});}
+function onYouTubeIframeAPIReady(){ytReady=true;pend.forEach(function(f){f();});pend=[];}
+if(needYT()){var sc=document.createElement('script');sc.src='https://www.youtube.com/iframe_api';document.head.appendChild(sc);}
+
+function destroy(li){var s=slots[li];if(!s)return;s.dead=true;
+  try{if(s.v){s.v.pause();s.v.removeAttribute('src');s.v.load();}if(s.y&&s.y.destroy)s.y.destroy();}catch(e){}
+  layers[li].innerHTML='';slots[li]=null;}
+
+function prepare(li,ii,cb){
+  destroy(li);var it=items[ii],s={ii:ii,ready:false};slots[li]=s;
+  var done=function(err){if(s.ready||s.dead)return;s.err=!!err;s.ready=true;if(cb)cb();};
+  if(it.t=='v'){
+    var v=document.createElement('video');v.preload='auto';v.playsInline=true;v.src=it.src;
+    v.addEventListener('canplay',function(){done(false);});
+    v.addEventListener('error',function(){done(true);});
+    layers[li].appendChild(v);s.v=v;v.load();
+  }else{
+    var d=document.createElement('div');layers[li].appendChild(d);
+    var mk=function(){if(s.dead)return;s.y=new YT.Player(d,{width:'100%',height:'100%',videoId:it.id,
+      playerVars:{autoplay:0,controls:0,rel:0,playsinline:1,iv_load_policy:3,disablekb:1,fs:0},
+      events:{onReady:function(e){e.target.mute();e.target.playVideo();},
+        onStateChange:function(e){if(e.data==1&&!s.ready&&!s.live){e.target.pauseVideo();e.target.seekTo(0,true);done(false);}},
+        onError:function(){done(true);}}});};
+    if(ytReady)mk();else pend.push(mk);
+  }
+}
+
+function show(li){
+  layers[li].style.zIndex=2;layers[li].style.opacity=1;
+  var o=1-li;layers[o].style.zIndex=1;layers[o].style.opacity=0;
+  cur=li;var nextIdx=(slots[li].ii+1)%items.length;
+  setTimeout(function(){destroy(o);prepare(o,nextIdx);switching=false;},400);
+}
+
+function start(li){
+  var s=slots[li];s.live=true;lastMove=Date.now();
+  if(s.v){s.v.currentTime=0;s.v.addEventListener('playing',function(){show(li);},{once:true});s.v.play();}
+  else{s.y.unMute();s.y.seekTo(0,true);s.y.playVideo();
+    var w=setInterval(function(){if(s.dead){clearInterval(w);return;}
+      if(s.y.getPlayerState()==1&&s.y.getCurrentTime()>0.05){clearInterval(w);show(li);}},40);}
+}
+
+function next(){
+  var o=1-cur,n=slots[o];
+  if(!n||!n.ready)return;
+  if(n.err){var skip=(n.ii+1)%items.length;destroy(o);setTimeout(function(){prepare(o,skip);},3000);return;}
+  switching=true;start(o);
+}
+
+setInterval(function(){
+  if(switching)return;var s=slots[cur];if(!s||!s.live)return;
+  var t=0,d=0,ended=false;
+  try{if(s.v){t=s.v.currentTime;d=s.v.duration;ended=s.v.ended;}
+      else{t=s.y.getCurrentTime();d=s.y.getDuration();ended=s.y.getPlayerState()===0;}}catch(e){}
+  if(t!=lastT){lastT=t;lastMove=Date.now();}
+  if(ended||(d>1&&d-t<0.35))next();
+  if(Date.now()-lastMove>45000)location.reload();
+},100);
+
+prepare(0,0,function(){var s=slots[0];if(s.err){setTimeout(function(){location.reload();},15000);return;}start(0);});
+</script></body></html>
+""";
 }
