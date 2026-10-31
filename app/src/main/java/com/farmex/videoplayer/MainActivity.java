@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.app.TimePickerDialog;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -21,6 +22,14 @@ import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.Toast;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.ui.AspectRatioFrameLayout;
+import androidx.media3.ui.PlayerView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -50,6 +59,8 @@ import org.json.JSONArray;
 public class MainActivity extends Activity {
     private static final int MAX = 5;
     private WebView web;
+    private PlayerView pv;
+    private ExoPlayer exo;
     private SharedPreferences p;
     private final Handler h = new Handler(Looper.getMainLooper());
     private boolean playing = false;
@@ -87,13 +98,24 @@ public class MainActivity extends Activity {
         });
         if (CookieHandler.getDefault() == null) CookieHandler.setDefault(new CookieManager());
         web.setWebChromeClient(new WebChromeClient());
-        setContentView(web);
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+        root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        pv = new PlayerView(this);
+        pv.setUseController(false);
+        pv.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT);
+        pv.setShutterBackgroundColor(Color.BLACK);
+        pv.setBackgroundColor(Color.BLACK);
+        pv.setFocusable(false);
+        pv.setVisibility(View.GONE);
+        root.addView(pv, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(root);
         hideBars();
         if (urls().isEmpty()) showSettings();
     }
 
     private void hideBars() {
-        web.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
     }
@@ -142,6 +164,7 @@ public class MainActivity extends Activity {
         playing = true;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         final int g = ++gen;
+        releaseExo();
         String first = l.get(0);
         if (l.size() == 1 && !isYoutube(first) && !isVideo(first)) {
             web.loadUrl(first); // una sola página web: se abre tal cual
@@ -154,28 +177,69 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             File dir = videoDir();
             List<String> fin = new ArrayList<>();
+            List<Uri> uris = new ArrayList<>();
+            boolean anyYT = false;
             Set<String> keep = new HashSet<>();
             int total = 0, k = 0;
             for (String u : media) if (!isYoutube(u)) total++;
             for (String u : media) {
                 if (g != gen) return;
-                if (isYoutube(u)) { fin.add(u); continue; }
+                if (isYoutube(u)) { fin.add(u); anyYT = true; continue; }
                 k++;
                 String name = Integer.toHexString(u.hashCode()) + ".mp4";
                 keep.add(name);
                 File f = new File(dir, name);
-                if (f.exists() || download(u, f, k, total, g)) fin.add(LOCAL + name);
-                else fin.add(u); // si no se pudo bajar, se intenta online
+                if (f.exists() || download(u, f, k, total, g)) { fin.add(LOCAL + name); uris.add(Uri.fromFile(f)); }
+                else { fin.add(u); uris.add(Uri.parse(u)); } // si no se pudo bajar, se intenta online
             }
             if (g != gen) return;
             File[] all = dir.listFiles();
             if (all != null) for (File x : all) if (!keep.contains(x.getName())) x.delete();
+            final boolean native_ = !anyYT;
             runOnUiThread(() -> {
                 if (g != gen || !playing) return;
+                if (native_) { playNative(uris); return; }
                 String list = new JSONArray(fin).toString().replace("</", "<\\/");
                 web.loadDataWithBaseURL(BASE, PLAYER.replace("__LIST__", list), "text/html", "utf-8", null);
             });
         }).start();
+    }
+
+    // Reproductor nativo de Android: lista en loop, el siguiente ya precargado
+    private void playNative(List<Uri> uris) {
+        releaseExo();
+        exo = new ExoPlayer.Builder(this).build();
+        pv.setPlayer(exo);
+        for (Uri u : uris) exo.addMediaItem(MediaItem.fromUri(u));
+        exo.setRepeatMode(Player.REPEAT_MODE_ALL);
+        exo.addListener(new Player.Listener() {
+            @Override public void onPlayerError(PlaybackException e) {
+                Toast.makeText(MainActivity.this, "Error con un video, paso al siguiente", Toast.LENGTH_LONG).show();
+                h.postDelayed(() -> {
+                    if (exo == null) return;
+                    if (exo.hasNextMediaItem()) exo.seekToNextMediaItem();
+                    else exo.seekToDefaultPosition(0);
+                    exo.prepare();
+                    exo.play();
+                }, 3000);
+            }
+        });
+        exo.prepare();
+        exo.play();
+        web.loadUrl("about:blank");
+        web.setVisibility(View.GONE);
+        pv.setVisibility(View.VISIBLE);
+    }
+
+    private void releaseExo() {
+        if (exo != null) { pv.setPlayer(null); exo.release(); exo = null; }
+        pv.setVisibility(View.GONE);
+        web.setVisibility(View.VISIBLE);
+    }
+
+    @Override protected void onDestroy() {
+        super.onDestroy();
+        releaseExo();
     }
 
     private void status(String t) {
@@ -304,6 +368,7 @@ public class MainActivity extends Activity {
     private void stop() {
         playing = false;
         gen++;
+        releaseExo();
         web.loadUrl("about:blank");
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
