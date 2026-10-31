@@ -222,11 +222,15 @@ public class MainActivity extends Activity {
 <style>
 html,body{margin:0;height:100%;background:#000;overflow:hidden}
 .ly{position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;z-index:1;background:#000}
+#st{position:absolute;left:12px;bottom:12px;z-index:9;color:#ccc;font:16px sans-serif;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:6px}
 .ly video,.ly iframe,.ly div{width:100%;height:100%;border:0;object-fit:contain;background:#000}
 </style></head><body>
-<div class="ly" id="a"></div><div class="ly" id="b"></div>
+<div class="ly" id="a"></div><div class="ly" id="b"></div><div id="st">Cargando video 1...</div>
 <script>
 var LIST=__LIST__;
+var ST=document.getElementById('st');
+function msg(t){ST.textContent=t;ST.style.display=t?'block':'none';}
+var YTERR={2:'link de YouTube inválido',5:'error del reproductor',100:'video eliminado o privado',101:'el dueño no permite verlo fuera de YouTube',150:'el dueño no permite verlo fuera de YouTube',152:'YouTube bloqueó el reproductor',153:'YouTube bloqueó el reproductor'};
 var RX=new RegExp("(?:youtu[.]be/|[?&]v=|/shorts/|/live/|/embed/)([A-Za-z0-9_-]{11})");
 var items=LIST.map(function(u){var m=u.match(RX);return m?{t:'yt',id:m[1]}:{t:'v',src:u};});
 var layers=[document.getElementById('a'),document.getElementById('b')];
@@ -242,25 +246,27 @@ function destroy(li){var s=slots[li];if(!s)return;s.dead=true;
 
 function prepare(li,ii,cb){
   destroy(li);var it=items[ii],s={ii:ii,ready:false};slots[li]=s;
-  var done=function(err){if(s.ready||s.dead)return;s.err=!!err;s.ready=true;if(cb)cb();};
+  var done=function(err,why){if(s.ready||s.dead)return;s.err=!!err;s.ready=true;
+    if(err)msg('Video '+(ii+1)+' no se puede reproducir: '+(why||'error al cargar'));if(cb)cb();};
+  setTimeout(function(){done(false);},12000);
   if(it.t=='v'){
     var v=document.createElement('video');v.preload='auto';v.playsInline=true;v.src=it.src;
     v.addEventListener('canplay',function(){done(false);});
-    v.addEventListener('error',function(){done(true);});
+    v.addEventListener('error',function(){done(true,'no se pudo abrir el link');});
     layers[li].appendChild(v);s.v=v;v.load();
   }else{
     var d=document.createElement('div');layers[li].appendChild(d);
     var mk=function(){if(s.dead)return;s.y=new YT.Player(d,{width:'100%',height:'100%',videoId:it.id,
-      playerVars:{autoplay:0,controls:0,rel:0,playsinline:1,iv_load_policy:3,disablekb:1,fs:0},
+      playerVars:{autoplay:0,controls:0,rel:0,playsinline:1,iv_load_policy:3,disablekb:1,fs:0,origin:'https://farmex2026.github.io'},
       events:{onReady:function(e){e.target.mute();e.target.playVideo();},
         onStateChange:function(e){if(e.data==1&&!s.ready&&!s.live){e.target.pauseVideo();e.target.seekTo(0,true);done(false);}},
-        onError:function(){done(true);}}});};
+        onError:function(e){done(true,YTERR[e.data]||('código '+e.data));}}});};
     if(ytReady)mk();else pend.push(mk);
   }
 }
 
 function show(li){
-  layers[li].style.zIndex=2;layers[li].style.opacity=1;
+  msg('');layers[li].style.zIndex=2;layers[li].style.opacity=1;
   var o=1-li;layers[o].style.zIndex=1;layers[o].style.opacity=0;
   cur=li;var nextIdx=(slots[li].ii+1)%items.length;
   setTimeout(function(){destroy(o);prepare(o,nextIdx);switching=false;},400);
@@ -268,10 +274,11 @@ function show(li){
 
 function start(li){
   var s=slots[li];s.live=true;lastMove=Date.now();
-  if(s.v){s.v.currentTime=0;s.v.addEventListener('playing',function(){show(li);},{once:true});s.v.play();}
+  var shown=false,sh=function(){if(!shown&&!s.dead){shown=true;show(li);}};setTimeout(sh,4000);
+  if(s.v){s.v.currentTime=0;s.v.addEventListener('playing',sh,{once:true});s.v.play();}
   else{s.y.unMute();s.y.seekTo(0,true);s.y.playVideo();
     var w=setInterval(function(){if(s.dead){clearInterval(w);return;}
-      if(s.y.getPlayerState()==1&&s.y.getCurrentTime()>0.05){clearInterval(w);show(li);}},40);}
+      if(s.y.getPlayerState()==1&&s.y.getCurrentTime()>0.05){clearInterval(w);sh();}},40);}
 }
 
 function next(){
@@ -291,7 +298,10 @@ setInterval(function(){
   if(Date.now()-lastMove>45000)location.reload();
 },100);
 
-prepare(0,0,function(){var s=slots[0];if(s.err){setTimeout(function(){location.reload();},15000);return;}start(0);});
+function first(i){if(i>=items.length){setTimeout(function(){location.reload();},20000);return;}
+  msg('Cargando video '+(i+1)+'...');
+  prepare(0,i,function(){var s=slots[0];if(s.err){setTimeout(function(){first(i+1);},4000);return;}start(0);});}
+first(0);
 </script></body></html>
 """;
 }
