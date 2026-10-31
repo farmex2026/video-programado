@@ -13,6 +13,8 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -22,7 +24,22 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
+import java.net.CookieHandler;
+import java.net.CookieManager;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
@@ -36,6 +53,9 @@ public class MainActivity extends Activity {
     private SharedPreferences p;
     private final Handler h = new Handler(Looper.getMainLooper());
     private boolean playing = false;
+    private volatile int gen = 0;
+    private static final String BASE = "https://farmex2026.github.io/";
+    private static final String LOCAL = BASE + "__v/";
 
     private final Runnable tick = new Runnable() {
         @Override public void run() { check(); h.postDelayed(this, 20000); }
@@ -57,7 +77,15 @@ public class MainActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(true);
-        web.setWebViewClient(new WebViewClient());
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+                String u = r.getUrl().toString();
+                if (u.startsWith(LOCAL)) return serveLocal(u.substring(LOCAL.length()), r.getRequestHeaders());
+                return null;
+            }
+        });
+        if (CookieHandler.getDefault() == null) CookieHandler.setDefault(new CookieManager());
         web.setWebChromeClient(new WebChromeClient());
         setContentView(web);
         hideBars();
@@ -113,21 +141,166 @@ public class MainActivity extends Activity {
     private void play(List<String> l) {
         playing = true;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        final int g = ++gen;
         String first = l.get(0);
         if (l.size() == 1 && !isYoutube(first) && !isVideo(first)) {
             web.loadUrl(first); // una sola página web: se abre tal cual
             return;
         }
-        List<String> media = new ArrayList<>();
+        final List<String> media = new ArrayList<>();
         for (String u : l) if (isYoutube(u) || isVideo(u)) media.add(u);
         if (media.isEmpty()) { web.loadUrl(first); return; }
-        String list = new JSONArray(media).toString().replace("</", "<\\/");
-        web.loadDataWithBaseURL("https://farmex2026.github.io/",
-                PLAYER.replace("__LIST__", list), "text/html", "utf-8", null);
+        status("Preparando videos...");
+        new Thread(() -> {
+            File dir = videoDir();
+            List<String> fin = new ArrayList<>();
+            Set<String> keep = new HashSet<>();
+            int total = 0, k = 0;
+            for (String u : media) if (!isYoutube(u)) total++;
+            for (String u : media) {
+                if (g != gen) return;
+                if (isYoutube(u)) { fin.add(u); continue; }
+                k++;
+                String name = Integer.toHexString(u.hashCode()) + ".mp4";
+                keep.add(name);
+                File f = new File(dir, name);
+                if (f.exists() || download(u, f, k, total, g)) fin.add(LOCAL + name);
+                else fin.add(u); // si no se pudo bajar, se intenta online
+            }
+            if (g != gen) return;
+            File[] all = dir.listFiles();
+            if (all != null) for (File x : all) if (!keep.contains(x.getName())) x.delete();
+            runOnUiThread(() -> {
+                if (g != gen || !playing) return;
+                String list = new JSONArray(fin).toString().replace("</", "<\\/");
+                web.loadDataWithBaseURL(BASE, PLAYER.replace("__LIST__", list), "text/html", "utf-8", null);
+            });
+        }).start();
+    }
+
+    private void status(String t) {
+        runOnUiThread(() -> web.loadDataWithBaseURL(BASE,
+                "<html><body style='margin:0;background:#000;color:#ccc;font:18px sans-serif'>"
+                + "<div style='position:absolute;left:12px;bottom:12px'>" + t + "</div></body></html>",
+                "text/html", "utf-8", null));
+    }
+
+    private File videoDir() {
+        File d = new File(getFilesDir(), "videos");
+        if (!d.exists()) d.mkdirs();
+        return d;
+    }
+
+    private HttpURLConnection open(String url) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setInstanceFollowRedirects(true);
+        c.setConnectTimeout(20000);
+        c.setReadTimeout(60000);
+        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
+        return c;
+    }
+
+    // Baja el video al equipo (sirve para Drive y links directos)
+    private boolean download(String url, File out, int k, int total, int g) {
+        File part = new File(out.getPath() + ".part");
+        try {
+            HttpURLConnection c = open(url);
+            String ct = c.getContentType();
+            if (ct != null && ct.startsWith("text/html")) {
+                // Drive mostró la página de aviso: se arma el link de confirmación
+                InputStream hin = c.getInputStream();
+                ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                byte[] hb = new byte[8192]; int hn;
+                while ((hn = hin.read(hb)) > 0) bo.write(hb, 0, hn);
+                hin.close();
+                String html = bo.toString("UTF-8");
+                Matcher a = Pattern.compile("action=\"([^\"]+)\"").matcher(html);
+                if (!a.find()) return false;
+                StringBuilder q = new StringBuilder(a.group(1).replace("&amp;", "&"));
+                Matcher in = Pattern.compile("name=\"([^\"]+)\"\\s+value=\"([^\"]*)\"").matcher(html);
+                char sep = q.indexOf("?") < 0 ? '?' : '&';
+                while (in.find()) {
+                    q.append(sep).append(in.group(1)).append('=').append(URLEncoder.encode(in.group(2), "UTF-8"));
+                    sep = '&';
+                }
+                c = open(q.toString());
+                ct = c.getContentType();
+                if (ct != null && ct.startsWith("text/html")) return false;
+            }
+            long len = -1;
+            try { len = Long.parseLong(c.getHeaderField("Content-Length")); } catch (Exception ignored) {}
+            long done = 0, lastShow = 0;
+            try (InputStream is = c.getInputStream(); FileOutputStream os = new FileOutputStream(part)) {
+                byte[] b = new byte[65536]; int n;
+                while ((n = is.read(b)) > 0) {
+                    if (g != gen) { os.close(); part.delete(); return false; }
+                    os.write(b, 0, n);
+                    done += n;
+                    long now = System.currentTimeMillis();
+                    if (now - lastShow > 1500) {
+                        lastShow = now;
+                        String pc = len > 0 ? " " + (done * 100 / len) + "%" : " " + (done / 1048576) + " MB";
+                        status("Descargando video " + k + " de " + total + "..." + pc);
+                    }
+                }
+            }
+            if (done < 10000) { part.delete(); return false; }
+            return part.renameTo(out);
+        } catch (Exception e) {
+            part.delete();
+            return false;
+        }
+    }
+
+    // Entrega el video guardado al reproductor (con soporte para saltar dentro del archivo)
+    private WebResourceResponse serveLocal(String name, Map<String, String> reqHeaders) {
+        try {
+            File f = new File(videoDir(), name.replaceAll("[^A-Za-z0-9.]", ""));
+            if (!f.exists()) return null;
+            long len = f.length(), start = 0, end = len - 1;
+            String range = null;
+            for (Map.Entry<String, String> e : reqHeaders.entrySet())
+                if ("range".equalsIgnoreCase(e.getKey())) range = e.getValue();
+            boolean partial = false;
+            if (range != null && range.startsWith("bytes=")) {
+                String[] r = range.substring(6).split("-");
+                if (!r[0].isEmpty()) start = Long.parseLong(r[0].trim());
+                if (r.length > 1 && !r[1].trim().isEmpty()) end = Math.min(Long.parseLong(r[1].trim()), len - 1);
+                partial = true;
+            }
+            final long count = end - start + 1;
+            final FileInputStream fis = new FileInputStream(f);
+            long skipped = 0;
+            while (skipped < start) skipped += fis.skip(start - skipped);
+            InputStream limited = new InputStream() {
+                long left = count;
+                @Override public int read() throws IOException {
+                    if (left <= 0) return -1;
+                    int x = fis.read(); if (x >= 0) left--; return x;
+                }
+                @Override public int read(byte[] b, int off, int l) throws IOException {
+                    if (left <= 0) return -1;
+                    int x = fis.read(b, off, (int) Math.min(l, left));
+                    if (x > 0) left -= x;
+                    return x;
+                }
+                @Override public void close() throws IOException { fis.close(); }
+            };
+            Map<String, String> h = new HashMap<>();
+            h.put("Accept-Ranges", "bytes");
+            h.put("Content-Length", String.valueOf(count));
+            h.put("Access-Control-Allow-Origin", "*");
+            if (partial) h.put("Content-Range", "bytes " + start + "-" + end + "/" + len);
+            return new WebResourceResponse("video/mp4", null, partial ? 206 : 200,
+                    partial ? "Partial Content" : "OK", h, limited);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void stop() {
         playing = false;
+        gen++;
         web.loadUrl("about:blank");
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
@@ -176,6 +349,10 @@ public class MainActivity extends Activity {
             ll.addView(ets[i]);
         }
 
+        final CheckBox redl = new CheckBox(this);
+        redl.setText("Volver a descargar los videos (si cambiaste el video en Drive)");
+        ll.addView(redl);
+
         final CheckBox cb = new CheckBox(this);
         cb.setText("Usar horario");
         cb.setChecked(p.getBoolean("sched", false));
@@ -207,6 +384,10 @@ public class MainActivity extends Activity {
                     for (int i = 0; i < MAX; i++) e.putString("url" + (i + 1), ets[i].getText().toString().trim());
                     e.putBoolean("sched", cb.isChecked()).putInt("start", st[0]).putInt("end", en[0]).apply();
                     stop();
+                    if (redl.isChecked()) {
+                        File[] all = videoDir().listFiles();
+                        if (all != null) for (File x : all) x.delete();
+                    }
                     check();
                     hideBars();
                 })
@@ -236,6 +417,7 @@ var items=LIST.map(function(u){var m=u.match(RX);return m?{t:'yt',id:m[1]}:{t:'v
 var layers=[document.getElementById('a'),document.getElementById('b')];
 var slots=[null,null],cur=0,switching=false,ytReady=false,pend=[],lastT=-1,lastMove=Date.now();
 
+function restart(){destroy(0);destroy(1);switching=false;lastMove=Date.now();first(0);}
 function needYT(){return items.some(function(i){return i.t=='yt';});}
 function onYouTubeIframeAPIReady(){ytReady=true;pend.forEach(function(f){f();});pend=[];}
 if(needYT()){var sc=document.createElement('script');sc.src='https://www.youtube.com/iframe_api';document.head.appendChild(sc);}
@@ -252,7 +434,7 @@ function prepare(li,ii,cb){
   if(it.t=='v'){
     var v=document.createElement('video');v.preload='auto';v.playsInline=true;v.src=it.src;
     v.addEventListener('canplay',function(){done(false);});
-    v.addEventListener('error',function(){done(true,'no se pudo abrir el link');});
+    v.addEventListener('error',function(){var c=v.error?v.error.code:0;done(true,c==4?'formato no compatible o link no es un video':c==2?'error de red':'no se pudo abrir el link (código '+c+')');});
     layers[li].appendChild(v);s.v=v;v.load();
   }else{
     var d=document.createElement('div');layers[li].appendChild(d);
@@ -295,10 +477,10 @@ setInterval(function(){
       else{t=s.y.getCurrentTime();d=s.y.getDuration();ended=s.y.getPlayerState()===0;}}catch(e){}
   if(t!=lastT){lastT=t;lastMove=Date.now();}
   if(ended||(d>1&&d-t<0.35))next();
-  if(Date.now()-lastMove>45000)location.reload();
+  if(Date.now()-lastMove>45000)restart();
 },100);
 
-function first(i){if(i>=items.length){setTimeout(function(){location.reload();},20000);return;}
+function first(i){if(i>=items.length){setTimeout(function(){first(0);},20000);return;}
   msg('Cargando video '+(i+1)+'...');
   prepare(0,i,function(){var s=slots[0];if(s.err){setTimeout(function(){first(i+1);},4000);return;}start(0);});}
 first(0);
