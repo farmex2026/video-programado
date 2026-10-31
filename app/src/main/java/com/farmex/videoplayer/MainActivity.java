@@ -255,6 +255,8 @@ public class MainActivity extends Activity {
     // Entrega el video guardado al reproductor (con soporte para saltar dentro del archivo)
     private WebResourceResponse serveLocal(String name, Map<String, String> reqHeaders) {
         try {
+            int qi = name.indexOf('?');
+            if (qi >= 0) name = name.substring(0, qi);
             File f = new File(videoDir(), name.replaceAll("[^A-Za-z0-9.]", ""));
             if (!f.exists()) return null;
             long len = f.length(), start = 0, end = len - 1;
@@ -290,6 +292,7 @@ public class MainActivity extends Activity {
             h.put("Accept-Ranges", "bytes");
             h.put("Content-Length", String.valueOf(count));
             h.put("Access-Control-Allow-Origin", "*");
+            h.put("Cache-Control", "no-store");
             if (partial) h.put("Content-Range", "bytes " + start + "-" + end + "/" + len);
             return new WebResourceResponse("video/mp4", null, partial ? 206 : 200,
                     partial ? "Partial Content" : "OK", h, limited);
@@ -415,9 +418,9 @@ var YTERR={2:'link de YouTube inválido',5:'error del reproductor',100:'video el
 var RX=new RegExp("(?:youtu[.]be/|[?&]v=|/shorts/|/live/|/embed/)([A-Za-z0-9_-]{11})");
 var items=LIST.map(function(u){var m=u.match(RX);return m?{t:'yt',id:m[1]}:{t:'v',src:u};});
 var layers=[document.getElementById('a'),document.getElementById('b')];
-var slots=[null,null],cur=0,switching=false,ytReady=false,pend=[],lastT=-1,lastMove=Date.now();
+var loadN=0,endedSince=0,slots=[null,null],cur=0,switching=false,ytReady=false,pend=[],lastT=-1,lastMove=Date.now();
 
-function restart(){destroy(0);destroy(1);switching=false;lastMove=Date.now();first(0);}
+function restart(){endedSince=0;destroy(0);destroy(1);switching=false;lastMove=Date.now();first(0);}
 function needYT(){return items.some(function(i){return i.t=='yt';});}
 function onYouTubeIframeAPIReady(){ytReady=true;pend.forEach(function(f){f();});pend=[];}
 if(needYT()){var sc=document.createElement('script');sc.src='https://www.youtube.com/iframe_api';document.head.appendChild(sc);}
@@ -432,7 +435,7 @@ function prepare(li,ii,cb){
     if(err)msg('Video '+(ii+1)+' no se puede reproducir: '+(why||'error al cargar'));if(cb)cb();};
   setTimeout(function(){done(false);},12000);
   if(it.t=='v'){
-    var v=document.createElement('video');v.preload='auto';v.playsInline=true;v.src=it.src;
+    var v=document.createElement('video');v.preload='auto';v.playsInline=true;v.src=it.src+(it.src.indexOf('__v/')>=0?'?n='+(++loadN):'');
     v.addEventListener('canplay',function(){done(false);});
     v.addEventListener('error',function(){var c=v.error?v.error.code:0;done(true,c==4?'formato no compatible o link no es un video':c==2?'error de red':'no se pudo abrir el link (código '+c+')');});
     layers[li].appendChild(v);s.v=v;v.load();
@@ -476,6 +479,7 @@ setInterval(function(){
   try{if(s.v){t=s.v.currentTime;d=s.v.duration;ended=s.v.ended;}
       else{t=s.y.getCurrentTime();d=s.y.getDuration();ended=s.y.getPlayerState()===0;}}catch(e){}
   if(t!=lastT){lastT=t;lastMove=Date.now();}
+  if(ended){if(!endedSince)endedSince=Date.now();else if(Date.now()-endedSince>3000){endedSince=0;restart();return;}}else endedSince=0;
   if(ended||(d>1&&d-t<0.35))next();
   if(Date.now()-lastMove>45000)restart();
 },100);
