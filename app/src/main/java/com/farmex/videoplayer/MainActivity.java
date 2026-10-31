@@ -55,6 +55,7 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.json.JSONArray;
+import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private static final int MAX = 5;
@@ -65,11 +66,16 @@ public class MainActivity extends Activity {
     private final Handler h = new Handler(Looper.getMainLooper());
     private boolean playing = false;
     private volatile int gen = 0;
+    private int syncCount = 0;
     private static final String BASE = "https://farmex2026.github.io/";
     private static final String LOCAL = BASE + "__v/";
 
     private final Runnable tick = new Runnable() {
-        @Override public void run() { check(); h.postDelayed(this, 20000); }
+        @Override public void run() {
+            if (syncCount++ % 9 == 0) sync();
+            check();
+            h.postDelayed(this, 20000);
+        }
     };
 
     @Override
@@ -124,6 +130,7 @@ public class MainActivity extends Activity {
         super.onResume();
         hideBars();
         playing = false;
+        syncCount = 0;
         h.removeCallbacks(tick);
         h.post(tick);
     }
@@ -240,6 +247,54 @@ public class MainActivity extends Activity {
     @Override protected void onDestroy() {
         super.onDestroy();
         releaseExo();
+    }
+
+    // ---------- Panel web: trae los videos y horario de esta TV ----------
+    private static int hm(String t, int def) {
+        try { String[] a = t.split(":"); return Integer.parseInt(a[0].trim()) * 60 + Integer.parseInt(a[1].trim()); }
+        catch (Exception e) { return def; }
+    }
+
+    private void sync() {
+        final String panel = p.getString("panel", "").trim();
+        if (panel.isEmpty()) return;
+        final int tv = p.getInt("tv", 1);
+        new Thread(() -> {
+            try {
+                HttpURLConnection c = open(panel + (panel.contains("?") ? "&" : "?") + "tv=" + tv);
+                InputStream in = c.getInputStream();
+                ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                byte[] b = new byte[8192]; int n;
+                while ((n = in.read(b)) > 0) bo.write(b, 0, n);
+                in.close();
+                JSONObject j = new JSONObject(bo.toString("UTF-8"));
+                JSONArray a = j.optJSONArray("urls");
+                if (a == null) return;
+                SharedPreferences.Editor e = p.edit();
+                boolean changed = false;
+                for (int i = 0; i < MAX; i++) {
+                    String u = i < a.length() ? a.optString(i, "").trim() : "";
+                    if (!u.equals(p.getString("url" + (i + 1), ""))) changed = true;
+                    e.putString("url" + (i + 1), u);
+                }
+                boolean sc = j.optBoolean("sched", false);
+                int st = hm(j.optString("start", "08:00"), 480), en = hm(j.optString("end", "22:00"), 1320);
+                if (sc != p.getBoolean("sched", false) || st != p.getInt("start", 480) || en != p.getInt("end", 1320)) changed = true;
+                e.putBoolean("sched", sc).putInt("start", st).putInt("end", en);
+                int rev = j.optInt("rev", 0);
+                final boolean redl = p.contains("rev") && rev != p.getInt("rev", 0);
+                e.putInt("rev", rev).apply();
+                if (changed || redl) {
+                    runOnUiThread(() -> {
+                        stop();
+                        if (redl) { File[] all = videoDir().listFiles(); if (all != null) for (File x : all) x.delete(); }
+                        check();
+                    });
+                }
+            } catch (Exception ignored) {
+                // sin internet: sigue con lo último que tenía
+            }
+        }).start();
     }
 
     private void status(String t) {
@@ -404,6 +459,24 @@ public class MainActivity extends Activity {
         ll.setOrientation(LinearLayout.VERTICAL);
         ll.setPadding(40, 20, 40, 0);
 
+        TextView tp1 = new TextView(this);
+        tp1.setText("Link del panel web (si lo cargás, los videos y el horario se toman de ahí):");
+        ll.addView(tp1);
+        final EditText panelEt = new EditText(this);
+        panelEt.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
+        panelEt.setSingleLine(true);
+        panelEt.setHint("https://script.google.com/macros/s/.../exec");
+        panelEt.setText(p.getString("panel", ""));
+        ll.addView(panelEt);
+        TextView tp2 = new TextView(this);
+        tp2.setText("Número de esta TV:");
+        ll.addView(tp2);
+        final EditText tvEt = new EditText(this);
+        tvEt.setInputType(InputType.TYPE_CLASS_NUMBER);
+        tvEt.setSingleLine(true);
+        tvEt.setText(String.valueOf(p.getInt("tv", 1)));
+        ll.addView(tvEt);
+
         final EditText[] ets = new EditText[MAX];
         for (int i = 0; i < MAX; i++) {
             TextView t = new TextView(this);
@@ -449,6 +522,9 @@ public class MainActivity extends Activity {
                 .setView(sv)
                 .setPositiveButton("Guardar", (d, w) -> {
                     SharedPreferences.Editor e = p.edit();
+                    int tvn = 1;
+                    try { tvn = Integer.parseInt(tvEt.getText().toString().trim()); } catch (Exception ignored) {}
+                    e.putString("panel", panelEt.getText().toString().trim()).putInt("tv", tvn);
                     for (int i = 0; i < MAX; i++) e.putString("url" + (i + 1), ets[i].getText().toString().trim());
                     e.putBoolean("sched", cb.isChecked()).putInt("start", st[0]).putInt("end", en[0]).apply();
                     stop();
@@ -456,6 +532,8 @@ public class MainActivity extends Activity {
                         File[] all = videoDir().listFiles();
                         if (all != null) for (File x : all) x.delete();
                     }
+                    syncCount = 0;
+                    sync();
                     check();
                     hideBars();
                 })
