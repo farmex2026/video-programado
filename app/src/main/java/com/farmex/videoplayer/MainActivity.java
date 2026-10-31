@@ -96,7 +96,10 @@ public class MainActivity extends Activity {
         playing = true;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         String u = fixDrive(url);
-        if (isVideo(u)) {
+        String yt = youtubeHtml(u);
+        if (yt != null) {
+            web.loadDataWithBaseURL("https://farmex2026.github.io/", yt, "text/html", "utf-8", null);
+        } else if (isVideo(u)) {
             String safe = u.replace("'", "%27");
             String html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
                     + "<body style='margin:0;background:#000;overflow:hidden'>"
@@ -118,6 +121,41 @@ public class MainActivity extends Activity {
         Matcher m = Pattern.compile("drive\\.google\\.com/(?:file/d/|open\\?id=)([\\w-]+)").matcher(url);
         if (m.find()) return "https://drive.google.com/uc?export=download&id=" + m.group(1);
         return url;
+    }
+
+    // Arma un reproductor de YouTube que repite el video (o la lista) al terminar
+    private String youtubeHtml(String u) {
+        if (!u.contains("youtube.com") && !u.contains("youtu.be")) return null;
+        Matcher mv = Pattern.compile("(?:youtu\\.be/|[?&]v=|/shorts/|/live/|/embed/)([\\w-]{11})").matcher(u);
+        Matcher ml = Pattern.compile("[?&]list=([\\w-]+)").matcher(u);
+        String id = mv.find() ? mv.group(1) : null;
+        String list = ml.find() ? ml.group(1) : null;
+        if (id == null && list == null) return null;
+
+        String vars = "autoplay:1,controls:0,rel:0,playsinline:1,iv_load_policy:3,loop:1";
+        String opts;
+        if (list != null) {
+            vars += ",listType:'playlist',list:'" + list + "'";
+            opts = (id != null ? "videoId:'" + id + "'," : "");
+        } else {
+            vars += ",playlist:'" + id + "'";
+            opts = "videoId:'" + id + "',";
+        }
+        return "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                + "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}"
+                + "#p{position:absolute;top:0;left:0;width:100%;height:100%}</style></head><body>"
+                + "<div id='p'></div>"
+                + "<script src='https://www.youtube.com/iframe_api'></script><script>"
+                + "function onYouTubeIframeAPIReady(){new YT.Player('p',{width:'100%',height:'100%',"
+                + opts + "playerVars:{" + vars + "},events:{"
+                + "onReady:function(e){e.target.playVideo();},"
+                + "onStateChange:function(e){if(e.data===0){"
+                + (list != null ? "e.target.playVideoAt(0);" : "e.target.seekTo(0);e.target.playVideo();")
+                + "}},"
+                + "onError:function(){setTimeout(function(){location.reload();},30000);}"
+                + "}});}"
+                + "setTimeout(function(){if(!window.YT||!YT.Player)location.reload();},60000);"
+                + "</script></body></html>";
     }
 
     private boolean isVideo(String u) {
