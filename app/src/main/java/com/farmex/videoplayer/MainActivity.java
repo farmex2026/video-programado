@@ -59,6 +59,10 @@ import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private static final int MAX = 5;
+    // Link fijo del panel web (Apps Script). Si está cargado, en la TV solo se elige el número.
+    private static final String PANEL = "https://script.google.com/macros/s/AKfycbwGxSP8tR0myClVpEOVN3aafkzqUOKZCBWJGcOF3yoIcJCbT451ZEgE2wx8ZHpIbdVh/exec";
+    // PIN para abrir la configuración en la TV
+    private static final String CONFIG_PIN = "1234";
     private WebView web;
     private PlayerView pv;
     private ExoPlayer exo;
@@ -117,7 +121,7 @@ public class MainActivity extends Activity {
         root.addView(pv, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
         hideBars();
-        if (urls().isEmpty()) showSettings();
+        if (urls().isEmpty() && !p.contains("tv")) showSettings();
     }
 
     private void hideBars() {
@@ -256,7 +260,7 @@ public class MainActivity extends Activity {
     }
 
     private void sync() {
-        final String panel = p.getString("panel", "").trim();
+        final String panel = PANEL.startsWith("http") ? PANEL : p.getString("panel", "").trim();
         if (panel.isEmpty()) return;
         final int tv = p.getInt("tv", 1);
         new Thread(() -> {
@@ -447,10 +451,25 @@ public class MainActivity extends Activity {
         return String.format(Locale.US, "%02d:%02d", m / 60, m % 60);
     }
 
-    @Override public void onBackPressed() { showSettings(); }
+    @Override public void onBackPressed() { askPin(); }
+
+    private void askPin() {
+        final EditText pin = new EditText(this);
+        pin.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        pin.setHint("PIN");
+        new AlertDialog.Builder(this)
+                .setTitle("Configuración")
+                .setView(pin)
+                .setPositiveButton("Entrar", (d, w) -> {
+                    if (CONFIG_PIN.equals(pin.getText().toString().trim())) showSettings();
+                    else { Toast.makeText(this, "PIN incorrecto", Toast.LENGTH_SHORT).show(); hideBars(); }
+                })
+                .setNegativeButton("Cancelar", (d, w) -> hideBars())
+                .show();
+    }
 
     @Override public boolean onKeyDown(int code, KeyEvent ev) {
-        if (code == KeyEvent.KEYCODE_MENU) { showSettings(); return true; }
+        if (code == KeyEvent.KEYCODE_MENU) { askPin(); return true; }
         return super.onKeyDown(code, ev);
     }
 
@@ -458,81 +477,29 @@ public class MainActivity extends Activity {
         LinearLayout ll = new LinearLayout(this);
         ll.setOrientation(LinearLayout.VERTICAL);
         ll.setPadding(40, 20, 40, 0);
-
-        TextView tp1 = new TextView(this);
-        tp1.setText("Link del panel web (si lo cargás, los videos y el horario se toman de ahí):");
-        ll.addView(tp1);
-        final EditText panelEt = new EditText(this);
-        panelEt.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
-        panelEt.setSingleLine(true);
-        panelEt.setHint("https://script.google.com/macros/s/.../exec");
-        panelEt.setText(p.getString("panel", ""));
-        ll.addView(panelEt);
-        TextView tp2 = new TextView(this);
-        tp2.setText("Número de esta TV:");
-        ll.addView(tp2);
+        TextView t = new TextView(this);
+        t.setText("Número de esta TV (los videos y el horario se cargan desde el panel web):");
+        ll.addView(t);
         final EditText tvEt = new EditText(this);
         tvEt.setInputType(InputType.TYPE_CLASS_NUMBER);
         tvEt.setSingleLine(true);
         tvEt.setText(String.valueOf(p.getInt("tv", 1)));
+        tvEt.setSelectAllOnFocus(true);
         ll.addView(tvEt);
-
-        final EditText[] ets = new EditText[MAX];
-        for (int i = 0; i < MAX; i++) {
-            TextView t = new TextView(this);
-            t.setText("Video " + (i + 1) + ":");
-            ll.addView(t);
-            ets[i] = new EditText(this);
-            ets[i].setInputType(InputType.TYPE_TEXT_VARIATION_URI);
-            ets[i].setSingleLine(true);
-            ets[i].setHint("URL (opcional)");
-            ets[i].setText(p.getString("url" + (i + 1), ""));
-            ll.addView(ets[i]);
-        }
-
-        final CheckBox redl = new CheckBox(this);
-        redl.setText("Volver a descargar los videos (si cambiaste el video en Drive)");
-        ll.addView(redl);
-
-        final CheckBox cb = new CheckBox(this);
-        cb.setText("Usar horario");
-        cb.setChecked(p.getBoolean("sched", false));
-        ll.addView(cb);
-
-        final int[] st = { p.getInt("start", 480) };
-        final int[] en = { p.getInt("end", 1320) };
-        final Button bs = new Button(this);
-        final Button be = new Button(this);
-        bs.setText("Inicia: " + fmt(st[0]));
-        be.setText("Termina: " + fmt(en[0]));
-        bs.setOnClickListener(v -> new TimePickerDialog(this, (tp, hh, mm) -> {
-            st[0] = hh * 60 + mm; bs.setText("Inicia: " + fmt(st[0]));
-        }, st[0] / 60, st[0] % 60, true).show());
-        be.setOnClickListener(v -> new TimePickerDialog(this, (tp, hh, mm) -> {
-            en[0] = hh * 60 + mm; be.setText("Termina: " + fmt(en[0]));
-        }, en[0] / 60, en[0] % 60, true).show());
-        ll.addView(bs);
-        ll.addView(be);
-
-        ScrollView sv = new ScrollView(this);
-        sv.addView(ll);
 
         new AlertDialog.Builder(this)
                 .setTitle("Configuración")
-                .setView(sv)
+                .setView(ll)
                 .setPositiveButton("Guardar", (d, w) -> {
-                    SharedPreferences.Editor e = p.edit();
                     int tvn = 1;
                     try { tvn = Integer.parseInt(tvEt.getText().toString().trim()); } catch (Exception ignored) {}
-                    e.putString("panel", panelEt.getText().toString().trim()).putInt("tv", tvn);
-                    for (int i = 0; i < MAX; i++) e.putString("url" + (i + 1), ets[i].getText().toString().trim());
-                    e.putBoolean("sched", cb.isChecked()).putInt("start", st[0]).putInt("end", en[0]).apply();
-                    stop();
-                    if (redl.isChecked()) {
-                        File[] all = videoDir().listFiles();
-                        if (all != null) for (File x : all) x.delete();
+                    if (tvn != p.getInt("tv", -1)) {
+                        SharedPreferences.Editor e = p.edit();
+                        for (int i = 1; i <= MAX; i++) e.putString("url" + i, "");
+                        e.putInt("tv", tvn).remove("rev").apply();
                     }
-                    syncCount = 0;
+                    stop();
+                    syncCount = 1;
                     sync();
                     check();
                     hideBars();
