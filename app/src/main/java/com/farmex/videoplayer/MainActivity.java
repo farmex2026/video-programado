@@ -134,7 +134,7 @@ public class MainActivity extends Activity {
 
     private String fixDrive(String url) {
         Matcher m = Pattern.compile("drive\\.google\\.com/(?:file/d/|open\\?id=)([\\w-]+)").matcher(url);
-        if (m.find()) return "https://drive.google.com/uc?export=download&id=" + m.group(1);
+        if (m.find()) return "https://drive.usercontent.google.com/download?id=" + m.group(1) + "&export=download&confirm=t";
         return url;
     }
 
@@ -144,7 +144,7 @@ public class MainActivity extends Activity {
 
     private boolean isVideo(String u) {
         String l = u.toLowerCase(Locale.US);
-        return l.contains("drive.google.com/uc") || l.matches(".*\\.(mp4|webm|mkv|mov)(\\?.*)?$");
+        return l.contains("drive.google.com/uc") || l.contains("drive.usercontent.google.com") || l.matches(".*\\.(mp4|webm|mkv|mov)(\\?.*)?$");
     }
 
     private static String fmt(int m) {
