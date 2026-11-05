@@ -85,6 +85,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        // La pantalla nunca se apaga: fuera de horario queda en negro (igual que la web de antes)
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED);
         p = getSharedPreferences("cfg", MODE_PRIVATE);
         // Pasar la URL de la versión anterior al casillero 1
         if (!p.getString("url", "").isEmpty() && p.getString("url1", "").isEmpty()) {
@@ -429,7 +433,6 @@ public class MainActivity extends Activity {
         gen++;
         releaseExo();
         web.loadUrl("about:blank");
-        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
     private String fixDrive(String url) {
