@@ -160,8 +160,6 @@ public class MainActivity extends Activity {
         }
         return l;
     }
-        return l;
-    }
 
     private void check() {
         List<String> l = urls();
