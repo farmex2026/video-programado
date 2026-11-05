@@ -58,7 +58,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
-    private static final int MAX = 5;
+    private static final int MAX = 20;
     // Link fijo del panel web (Apps Script). Si está cargado, en la TV solo se elige el número.
     private static final String PANEL = "https://script.google.com/macros/s/AKfycbwGxSP8tR0myClVpEOVN3aafkzqUOKZCBWJGcOF3yoIcJCbT451ZEgE2wx8ZHpIbdVh/exec";
     // PIN para abrir la configuración en la TV
@@ -152,8 +152,14 @@ public class MainActivity extends Activity {
         List<String> l = new ArrayList<>();
         for (int i = 1; i <= MAX; i++) {
             String u = p.getString("url" + i, "").trim();
-            if (!u.isEmpty()) l.add(fixDrive(u));
+            if (u.isEmpty()) continue;
+            String tag = "";
+            int k = u.indexOf("#v=");
+            if (k >= 0) { tag = u.substring(k); u = u.substring(0, k); }
+            l.add(fixDrive(u) + tag);
         }
+        return l;
+    }
         return l;
     }
 
@@ -446,6 +452,8 @@ public class MainActivity extends Activity {
     }
 
     private boolean isVideo(String u) {
+        int k = u.indexOf('#');
+        if (k >= 0) u = u.substring(0, k);
         String l = u.toLowerCase(Locale.US);
         return l.contains("drive.google.com/uc") || l.contains("drive.usercontent.google.com") || l.matches(".*\\.(mp4|webm|mkv|mov)(\\?.*)?$");
     }
